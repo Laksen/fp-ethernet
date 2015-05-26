@@ -29,58 +29,14 @@ begin
 
   Start;
 
-  {write(ARPLookupIPv4(IPv4Address(192,168,87,102), addr), ' + ');
-  writeln(getstr(addr));
-  t:=GetTickCount; }
-
   repeat
     x:=Recv;
     if assigned(x) then
-      begin
-        //writeln('Got frame: ', x^.TotalSize);
-
-        {x^.Read(dst, sizeof(dst), 0);
-        x^.Read(src, sizeof(src), 6);
-        x^.Read(typ, sizeof(typ), 12);
-
-        writeln(x^.TotalSize:5, ' - [',GetStr(src),']=>[',GetStr(dst),'] = ', hexStr(typ,4));}
-
-        EthInput(_if, x);
-
-        {if (GetTickCount-t)>100 then
-          begin
-            write(ARPLookupIPv4(IPv4Address(192,168,87,102), addr), ' + ');
-            writeln(getstr(addr));
-            t:=GetTickCount;
-          end;}
-
-        DoTick();
-
-        //x^.DecRef;
-      end;
+      EthInput(_if, x);
+    
+    DoTick();
   until false;
 
   Stop;
-
-  {x:=AllocateBuffer(6);
-
-  x^.Flags:=[bfWritten];
-
-  x:=x^.Expand(6,8);
-
-  y:='abcdefgljhafkjsah';
-  z:='                 ';
-
-  writeln('Wrote: ', x^.Write(y[1], length(y), 2));
-  writeln('Read: ', x^.Read(z[1], length(z), 2));
-
-  writeln('"'+y+'"');
-  writeln('"'+z+'"');}
-
-  {while assigned(x) do
-    begin
-      writeln(x^.TotalSize);
-      x:=x^.Expand(2,0);
-    end;}
 end.
 

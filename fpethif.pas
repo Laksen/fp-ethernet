@@ -6,6 +6,9 @@ uses
   fpethbuf, fpethtypes;
 
 type
+  TNetifFlag = (ifNoPadding);
+  TNetifFlags = set of TNetifFlag;
+
   PNetif = ^TNetif;
   TNetif = record
     IPv4,
@@ -19,7 +22,7 @@ type
 
     // MTU for IP packets
     MTU_Eth: SmallInt;
-
+    Flags: TNetifFlags;
     IPTTL: byte;
 
     Output: function(AData: pointer; APacket: PBuffer): TNetResult;
@@ -69,9 +72,14 @@ function EthOutput(var AIF: TNetif; const ADst: THWAddress; ATyp: word; APacket:
   begin
     PackSize:=APacket^.TotalSize;
 
-    // Min size is 48, and we don't add FCS
-    Padding:=48+16-4-14-PackSize;
-    if Padding<0 then Padding:=0;
+    if ifNoPadding in AIF.Flags then
+      Padding:=0
+    else
+      begin
+        // Min size is 48, and we don't add FCS
+        Padding:=48+16-4-14-PackSize;
+        if Padding<0 then Padding:=0;
+      end;
 
     APacket:=APacket^.Expand(14,Padding);
 

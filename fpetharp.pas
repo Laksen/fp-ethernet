@@ -8,6 +8,8 @@ uses
 type
   TArpResult = (arSuccess, arLooking);
 
+procedure ARPSendGratuitous(var AIF: TNetif);
+
 function ARPLookupIPv4(const AAddress: TIPv4Address; var AHWAddress: THWAddress): TArpResult;
 
 // Called once per second
@@ -122,6 +124,33 @@ procedure SendRequest(AIndex: SizeInt);
       end;
   end;
 
+procedure ARPSendGratuitous(var AIF: TNetif);
+  var
+    Pack: PBuffer;
+    Header: TARPIPv4Header;
+  begin
+    Pack:=AllocateBuffer(sizeof(TARPIPv4Header), plLink);
+    if assigned(Pack) then
+      begin
+        Header.HType:=NtoBE(HTYPE_ETHER);
+        Header.HLen:=HLEN_ETHER;
+        Header.PType:=NtoBE(PTYPE_IPv4);
+        Header.PLen:=PLEN_IPv4;
+
+        Header.Oper:=NtoBE(OPER_REQUEST);
+
+        Header.SHA:=AIF.HWAddr;
+        Header.SPA:=AIF.IPv4;
+
+        Header.THA:=BroadcastAddr;
+        Header.TPA:=AIF.IPv4;
+
+        Pack^.Write(Header, sizeof(header), 0);
+
+        EthOutput(AIF, BroadcastAddr, ET_ARP, Pack);
+      end;
+  end;
+
 function ARPLookupIPv4(const AAddress: TIPv4Address; var AHWAddress: THWAddress): TArpResult;
   var
     i: NativeInt;
@@ -137,6 +166,11 @@ function ARPLookupIPv4(const AAddress: TIPv4Address; var AHWAddress: THWAddress)
                   IPCache[i].TTL:=ARPCacheCompleteTTL;
                 exit(arSuccess);
               end;
+          end
+        else if IPCache[i].State=asIncomplete then
+          begin
+            if AddrMatches(IPCache[i].IP, AAddress) then
+              exit(arLooking);
           end;
       end;
 
@@ -197,7 +231,8 @@ procedure ARPInput(var AIF: TNetif; APacket: PBuffer);
             MergeFlag:=true;
           end;
 
-    if AddrMatches(AIF.IPv4,Header.TPA) then
+    if AddrMatches(AIF.IPv4,Header.TPA) and
+       (not AddrMatches(AIF.HWAddr,Header.THA)) then
       begin
         if not MergeFlag then
           begin
