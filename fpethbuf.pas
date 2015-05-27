@@ -11,6 +11,26 @@ type
   TBufferFlags = set of TBufferFlag;
 
   PBuffer = ^TBuffer;
+
+  TBufferWriter = record
+    Desc: PBuffer;
+    Offset: SizeInt;
+
+    procedure Advance(ABytes: SizeInt);
+
+    procedure Write(const Data; Size: SizeInt);
+    procedure Read(var Data; Size: SizeInt);
+
+    procedure WriteZeros(Size: SizeInt);
+    procedure WriteByte(Val: byte);
+    procedure WriteWord(Val: word);
+    procedure WriteLongword(Val: longword);
+
+    function ReadByte: byte;
+    function ReadWord: word;
+    function ReadLongWord: longword;
+  end;
+
   TBuffer = record
     Data: PByte;
     DataSize: SizeInt;
@@ -34,6 +54,8 @@ type
 
     function Clone: PBuffer;
     function MakeUnique: PBuffer;
+
+    function GetWriter: TBufferWriter;
 
     function Expand(AHeader, ATail: SizeInt): PBuffer;
 
@@ -332,6 +354,75 @@ function AllocateStaticBuffer(AData: Pointer; ASize: SizeInt): PBuffer;
     AllocateStaticBuffer:=Desc;
   end;
 
+procedure TBufferWriter.Advance(ABytes: SizeInt);
+  var
+    Left: SizeInt;
+  begin
+    while ABytes>0 do
+      begin
+        Left:=Desc^.Size-Offset;
+        if Left>ABytes then
+          begin
+            inc(Offset,ABytes);
+            exit;
+          end
+        else
+          begin
+            Desc:=Desc^.Next;
+            Offset:=0;
+            Dec(ABytes, Left);
+          end;
+      end;
+  end;
+
+procedure TBufferWriter.Write(const Data; Size: SizeInt);
+  begin
+    Desc^.Write(Data, Size, Offset);
+    Advance(Size);
+  end;
+
+procedure TBufferWriter.Read(var Data; Size: SizeInt);
+  begin
+    Desc^.Read(Data, Size, Offset);
+    Advance(Size);
+  end;
+
+procedure TBufferWriter.WriteZeros(Size: SizeInt);
+  begin
+    Desc^.WriteZero(Size, Offset);
+    Advance(Size);
+  end;
+
+procedure TBufferWriter.WriteByte(Val: byte);
+  begin
+    Write(Val, 1);
+  end;
+
+procedure TBufferWriter.WriteWord(Val: word);
+  begin
+    Write(val, 2);
+  end;
+
+procedure TBufferWriter.WriteLongword(Val: longword);
+  begin
+    Write(val, 4);
+  end;
+
+function TBufferWriter.ReadByte: byte;
+  begin
+    Read(result, 1);
+  end;
+
+function TBufferWriter.ReadWord: word;
+  begin
+    Read(result, 2);
+  end;
+
+function TBufferWriter.ReadLongWord: longword;
+  begin
+    Read(result, 4);
+  end;
+
 procedure TBuffer.Free;
   var
     cur, N: PBuffer;
@@ -465,6 +556,13 @@ function TBuffer.MakeUnique: PBuffer;
       MakeUnique:=@Self;
 
     DecRef;
+  end;
+
+function TBuffer.GetWriter: TBufferWriter;
+  begin
+    Include(Flags, bfWritten);
+    result.Desc:=@self;
+    result.Offset:=0;
   end;
 
 function TBuffer.Expand(AHeader, ATail: SizeInt): PBuffer;

@@ -209,10 +209,10 @@ function UDPOutput(var AIF: TNetif; APacket: PBuffer; ASourcePort, ADestPort: wo
           begin
             Header.Dest:=NtoBE(ADestPort);
             Header.Source:=NtoBE(ASourcePort);
-            Header.Length:=NtoBE(sizeof(Header)+PackSize);
+            Header.Length:=NtoBE(word(sizeof(Header)+PackSize));
             APacket^.Write(Header, SizeOf(Header), 0);
 
-            Header.Checksum:=NtoBE(CalcUDPIPv4Checksum(CalcChecksum(APacket, Sizeof(Header)+PackSize), AIF.IPv4, ADest.V4, sizeof(Header)+PackSize));
+            Header.Checksum:=NtoBE(not CalcUDPIPv4Checksum(CalcChecksum(APacket, Sizeof(Header)+PackSize), AIF.IPv4, ADest.V4, sizeof(Header)+PackSize));
             APacket^.Write(Header.Checksum, SizeOf(word), 6);
 
             exit(IPOutput(AIF, IPPROTO_UDP, ADest, APacket));
@@ -259,8 +259,6 @@ procedure UDPv4Input(var AIF: TNetif; APacket: PBuffer; const ASource, ADest: TI
       begin
         Trailer:=APacket^.TotalSize-8-len;
         if Trailer<0 then Trailer:=0;
-
-        writeln('Contracting: ', 8, '-', Trailer);
 
         APacket:=APacket^.Contract(8, Trailer);
 

@@ -32,6 +32,10 @@ const
   IPOutputFragments = 8;
   IPOutputFragmentTTL = 1000;
 
+{ DHCP }
+const
+  DHCPClientCount = 1;
+
 // Return a millisecond time. May overflow
 function GetMSTick: longword;
 

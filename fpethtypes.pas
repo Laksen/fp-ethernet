@@ -10,6 +10,8 @@ const
   ET_IPv4 = $0800;
   ET_IPv6 = $86DD;
 
+{$packrecords 1}
+
 type
   TNetResult = (nrOk, nrAddressLookup, nrOutOfMem, nrQueueFull, nrNoRoute, nrNotSupported, nrPortOccupied, nrNotConnected);
 
@@ -70,7 +72,7 @@ procedure DoTick();
 implementation
 
 uses
-  fpetharp,fpethtcp,fpethudp,fpethip,
+  fpetharp,fpethtcp,fpethudp,fpethip,fpethdhcp,
   fpethcfg;
 
 function HWAddress(a, b, c, d, e, f: byte): THWAddress;
@@ -368,6 +370,7 @@ procedure DoTick();
         OldTick:=NewTick;
 
         ARPTick(Delta);
+        DHCPTick(Delta);
       end;
   end;
 

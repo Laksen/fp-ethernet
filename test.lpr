@@ -2,7 +2,7 @@ program test;
 
 uses
   sysutils,
-  fpethbuf, fpethcfg, fpethip, fpethudp, fpethtcp, fpetharp, fpethtypes, linuxraw, fpethif, fpethicmp;
+  fpethbuf, fpethcfg, fpethip, fpethudp, fpethtcp, fpetharp, fpethtypes, linuxraw, fpethif, fpethicmp, fpethdhcp;
 
 var
   x: PBuffer;
@@ -18,7 +18,7 @@ begin
   _if.SubMaskv4:=IPv4Address(255,255,255,0);
 
   _if.HWAddr:=HWAddress($38,$2c,$4a,$74,$09,$a1);
-  _if.IPv4:=IPv4Address(192,168,87,104);
+  _if.IPv4:=IPv4Address(0,0,0,0);
   _if.Output:=@send;
 
   _if.MTU_Eth:=1400;
@@ -26,6 +26,8 @@ begin
   _if.IPTTL:=64;
 
   AddIF(@_if);
+
+  writeln('Starting DHCP: ', DHCPStartClient(_if));
 
   Start;
 

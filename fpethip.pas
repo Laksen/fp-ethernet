@@ -164,7 +164,9 @@ function IPOutput(var AIF: TNetif; AProto: word; const AIP: TIPAddress; APacket:
   begin
     if AIP.AddrTyp=atIPv4 then
       begin
-        if ARPLookupIPv4(AIP.V4, HWAddr)=arSuccess then
+        HWAddr:=BroadcastAddr;
+        if IsBroadcast(AIP.V4, AIF.SubMaskv4) or
+           (ARPLookupIPv4(AIP.V4, HWAddr)=arSuccess) then
           begin
             if (APacket^.TotalSize+20)>AIF.MTU_Eth then
               begin
