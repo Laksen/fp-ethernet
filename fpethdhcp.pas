@@ -21,6 +21,8 @@ type
     T1, T2: longint;
     XID: longword;
     _IF: PNetif;
+    Server,
+    Wanted: TIPv4Address;
   end;
 
 const
@@ -32,6 +34,30 @@ const
   HT_ETHERNET = 1;
 
   DHCP_COOKIE = $63825363;
+
+  DMT_DISCOVER = 1;
+  DMT_OFFER = 2;
+  DMT_REQUEST = 3;
+  DMT_DECLINE = 4;
+  DMT_ACK = 5;
+  DMT_NAK = 6;
+  DMT_RELEASE = 7;
+
+  DO_PAD = 0;
+  DO_SUBNET_MASK = 1;
+  DO_ROUTER = 3;
+  DO_NAME_SERVER = 5;
+  DO_DOMAIN_NAME_SERVER = 6;
+  DO_DEFAULT_IP_TTL = 23;
+  DO_REQUESTED_IP = 50;
+  DO_IP_LEASE_TIME = 51;
+  DO_DHCP_MESSAGE_TYPE = 53;
+  DO_SERVER_ID = 54;
+  DO_PARAM_REQ_LIST = 55;
+  DO_RENEW_TIME = 58;
+  DO_REBINDING_TIME = 59;
+  DO_CLIENT_ID = 61;
+  DO_END_OPTION = 255;
 
 var
   Clients: array[0..DHCPClientCount-1] of TDHCPClient;
@@ -58,53 +84,207 @@ type
     BOOTFILE: array[0..127] of char;
   end;
 
+procedure SendRequest(AClient: NativeInt);
+  var
+    msg: PBuffer;
+    writer: TBufferWriter;
+    t: TNetResult;
+  begin
+    msg:=AllocateBuffer(sizeof(TDHCPHeader)+4+3+6+6+2, plApplication);
+    if assigned(msg) then
+      begin
+        writer:=msg^.GetWriter;
+
+        writer.WriteByte(BOOT_REQUEST);
+        writer.WriteByte(HT_ETHERNET);
+        writer.WriteByte(6);
+        writer.WriteByte(0);
+
+        writer.WriteLongWord(clients[AClient].XID);
+
+        writer.WriteWord(0);
+        writer.WriteWord(NtoBE(word($8000))); // Broadcast
+
+        writer.WriteZeros(2*4);
+        writer.WriteLongword(Clients[AClient].Server.val);
+        writer.WriteZeros(4);
+
+        writer.Write(Clients[AClient]._IF^.HWAddr, 6);
+        writer.WriteZeros(10+192);
+
+        writer.WriteLongword(NtoBE(longword(DHCP_COOKIE)));
+
+        writer.WriteByte(DO_DHCP_MESSAGE_TYPE); writer.WriteByte(1);
+          writer.WriteByte(DMT_REQUEST);
+
+        writer.WriteByte(DO_REQUESTED_IP); writer.WriteByte(4);
+          writer.WriteLongword(Clients[AClient].Wanted.val);
+
+        writer.WriteByte(DO_SERVER_ID); writer.WriteByte(4);
+          writer.WriteLongword(Clients[AClient].Wanted.val);
+
+        writer.WriteByte(DO_END_OPTION); // End option
+          writer.WriteByte(0);
+
+        t:=UDPSendTo(sock, msg, IPAddress(IPv4_AnyAddr), DHCP_Port);
+        if t<>nrOk then
+          writeln('Failed to send DHCP request: ', t);
+      end;
+  end;
+
 procedure DHCPRecv(AData: Pointer; ASocket: TUDPSocketHandle; APacket: PBuffer; ASource: TIPAddress; ASourcePort: word);
   var
-    PackSize: SizeInt;
-    rd: TBufferWriter;
+    PackSize,ps2: SizeInt;
+    rd,rd2: TBufferWriter;
     xid: LongWord;
-    we: LongWord;
-    len: Byte;
-    t: Byte;
+    MsgType, len, t: Byte;
+    yiaddr,siaddr: LongWord;
+    claddr: THWAddress;
+    i, cl: NativeInt;
   begin
     PackSize:=APacket^.TotalSize;
 
-    rd:=APacket^.GetWriter;
+    if PackSize>=sizeof(TDHCPHeader) then
+      begin
+        rd:=APacket^.GetWriter;
 
-    repeat
-      if rd.ReadByte<>BOOT_REPLY then break;
-      if rd.ReadByte<>HT_ETHERNET then break;
-      if rd.ReadByte<>6 then break;
-      rd.Advance(1);
+        repeat
+          if rd.ReadByte<>BOOT_REPLY then break;
+          if rd.ReadByte<>HT_ETHERNET then break;
+          if rd.ReadByte<>6 then break;
+          rd.Advance(1);
 
-      xid:=rd.ReadLongWord;
+          xid:=rd.ReadLongWord;
 
-      rd.Advance(236-8);
+          rd.advance(8); // Skip SECS+FLAGS+CIADDR
+          yiaddr:=rd.ReadLongWord;
+          siaddr:=rd.ReadLongWord;
+          rd.advance(4); // Skip GIADDR
+          rd.Read(claddr, 6);
 
-      if rd.ReadLongWord<>NtoBE(DHCP_COOKIE) then break;
+          cl:=-1;
+          for i:=0 to DHCPClientCount-1 do
+            begin
+              if (Clients[i].XID=xid) and
+                 (clients[i]._IF<>nil) and
+                 (clients[i].State in [dsSelecting,dsRequesting,dsRebinding,dsRenewing]) and
+                 AddrMatches(clients[i]._IF^.HWAddr, claddr) then
+                begin
+                  cl:=i;
+                  break;
+                end;
+            end;
 
-      dec(PackSize, 236+4);
+          if cl<0 then break;
 
-      writeln('DHCP reply');
+          rd.Advance(236-8-(8+4+8+6));
 
-      // Read options
-      while (PackSize>0) do
-        begin
-          t:=rd.ReadByte;
-          if t=$FF then
-            break;
+          if rd.ReadLongWord<>NtoBE(DHCP_COOKIE) then break;
 
-          len:=rd.ReadByte;
+          dec(PackSize, 236+4);
 
-          writeln(' Option ', t, ' (', len,'): ');
+          rd2:=rd;
+          ps2:=PackSize;
 
-          rd.Advance(len);
+          // Scan through options to find the DHCP message type
+          MsgType:=0;
+          while (ps2>0) do
+            begin
+              t:=rd2.ReadByte;
+              if t=0 then
+                begin
+                  dec(ps2);
+                  continue;
+                end
+              else if t=$FF then
+                break;
 
-          dec(PackSize,2+len);
-        end;
-    until false;
+              len:=rd2.ReadByte;
 
-    //writeln('Got msg');
+              case t of
+                DO_DHCP_MESSAGE_TYPE: MsgType:=rd2.ReadByte;
+              end;
+
+              rd2.Advance(len);
+
+              dec(ps2,2+len);
+            end;
+
+          case MsgType of
+            DMT_OFFER:
+              begin
+                if clients[cl].State<>dsSelecting then
+                  break;
+
+                APacket^.DecRef;
+                SendRequest(cl);
+
+                clients[cl].State:=dsRequesting;
+
+                clients[cl].T1:=DHCPRequestRetryTimeout;
+                clients[cl].T2:=DHCPRequestTimeout;
+
+                clients[cl].Wanted.val:=yiaddr;
+                clients[cl].Server.val:=siaddr;
+
+                exit;
+              end;
+            DMT_ACK:
+              begin
+                if clients[cl].State<>dsRequesting then
+                  break;
+
+                if clients[cl].Server.val<>siaddr then
+                  break;
+
+                clients[cl]._IF^.IPv4.val:=yiaddr;
+                clients[cl].State:=dsBound;
+              end;
+            DMT_NAK:
+              begin
+                if clients[cl].State<>dsRequesting then
+                  break;
+
+                if clients[cl].Server.val<>siaddr then
+                  break;
+
+                clients[cl].State:=dsInit;
+              end
+            else
+              break;
+          end;
+
+          // Read options
+          while (PackSize>0) do
+            begin
+              t:=rd.ReadByte;
+              if t=0 then
+                begin
+                  dec(PackSize);
+                  continue;
+                end
+              else if t=$FF then
+                break;
+
+              len:=rd.ReadByte;
+
+              case t of
+                DO_DEFAULT_IP_TTL: Clients[cl]._IF^.IPTTL:=rd.ReadByte;
+
+                DO_SUBNET_MASK: Clients[cl]._IF^.SubMaskv4.val:=rd.ReadLongWord;
+
+                DO_RENEW_TIME: Clients[cl].T1:=BEtoN(rd.ReadLongWord);
+                DO_REBINDING_TIME: Clients[cl].T2:=BEtoN(rd.ReadLongWord);
+
+                else
+                  rd.Advance(len);
+              end;
+
+              dec(PackSize,2+len);
+            end;
+        until true;
+      end;
+
     APacket^.DecRef;
   end;
 
@@ -155,7 +335,7 @@ procedure DHCPTick(ADeltaMS: SmallInt);
             begin
               writeln('DHCP init');
 
-              msg:=AllocateBuffer(sizeof(TDHCPHeader)+4+3+9+5+1+2, plApplication);
+              msg:=AllocateBuffer(sizeof(TDHCPHeader)+4+3+9+5+2+1, plApplication);
               if assigned(msg) then
                 begin
                   writer:=msg^.GetWriter;
@@ -178,17 +358,18 @@ procedure DHCPTick(ADeltaMS: SmallInt);
 
                   writer.WriteLongword(NtoBE(longword(DHCP_COOKIE)));
 
-                  writer.WriteByte(53); writer.WriteByte(1); writer.WriteByte(1); // DHCPDISCOVER option
+                  writer.WriteByte(DO_DHCP_MESSAGE_TYPE); writer.WriteByte(1); // DHCPDISCOVER option
+                    writer.WriteByte(DMT_DISCOVER);
 
-                  writer.WriteByte(61); writer.WriteByte(7); // Client identifier
+                  writer.WriteByte(DO_CLIENT_ID); writer.WriteByte(7); // Client identifier
                     writer.WriteByte(1);
                     writer.Write(Clients[i]._IF^.HWAddr, 6);
 
-                  writer.WriteByte(55); writer.WriteByte(3);
+                  writer.WriteByte(DO_PARAM_REQ_LIST); writer.WriteByte(3);
                     writer.WriteByte(1); // Subnet
                     writer.WriteByte(3); // Router
                     writer.WriteByte(6); // DNS
-                  writer.WriteByte($FF); // End option
+                  writer.WriteByte(DO_END_OPTION); // End option
                     writer.WriteByte(0);
                     writer.WriteByte(0);
 
@@ -196,16 +377,35 @@ procedure DHCPTick(ADeltaMS: SmallInt);
                   if t<>nrOk then
                     begin
                       writeln('Failed to send DHCP discover: ', t);
-                      msg^.DecRef;
                     end
                   else
                     begin
                       writeln('Sent DHCP discover');
                       Clients[i].State:=dsSelecting;
+                      clients[i].T1:=DHCPInitRetryTime;
                     end;
                 end
               else
                 writeln('No buffer');
+            end;
+          dsSelecting:
+            begin
+              dec(clients[i].T1,ADeltaMS);
+              if clients[i].T1<=0 then
+                clients[i].State:=dsInit;
+            end;
+          dsRequesting:
+            begin
+              dec(clients[i].T1,ADeltaMS);
+              dec(clients[i].T2,ADeltaMS);
+
+              if clients[i].T2<=0 then
+                clients[i].State:=dsInit
+              else if clients[i].T1<=0 then
+                begin
+                  SendRequest(i);
+                  clients[i].T1:=DHCPRequestRetryTimeout;
+                end;
             end;
         end;
       end;

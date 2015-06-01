@@ -27,7 +27,7 @@ begin
 
   AddIF(@_if);
 
-  writeln('Starting DHCP: ', DHCPStartClient(_if));
+  DHCPStartClient(_if);
 
   Start;
 

@@ -49,10 +49,15 @@ type
 procedure Start;
   var
     ifr: ifreq;
+    timeout: timespec;
   begin
     sockfd:=fpsocket(PF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
     writeln(sockfd);
     writeln(socketerror);
+
+    timeout.tv_nsec:=100*1000*1000;
+    timeout.tv_sec:=0;
+    fpsetsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, @timeout, sizeof(timeout));
 
     fillchar(ifr, sizeof(ifr), 0);
     ifr.ifrn_name:='eth0';

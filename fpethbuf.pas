@@ -358,7 +358,8 @@ procedure TBufferWriter.Advance(ABytes: SizeInt);
   var
     Left: SizeInt;
   begin
-    while ABytes>0 do
+    while (ABytes>0) and
+          assigned(Desc) do
       begin
         Left:=Desc^.Size-Offset;
         if Left>ABytes then
@@ -705,8 +706,59 @@ function TBuffer.ContractHeader(AHeader: SizeInt): PBuffer;
   end;
 
 function TBuffer.ContractTail(ATail: SizeInt): PBuffer;
+  var
+    left, leftOver: SizeInt;
+    p: PBuffer;
   begin
     ContractTail:=@self;
+
+    left:=TotalSize;
+    if left<=ATail then
+      begin
+        if assigned(next) then
+          begin
+            next^.DecRef;
+            next:=nil;
+          end;
+
+        Size:=0;
+        Offset:=DataSize;
+        Exclude(Flags, bfWritten);
+      end
+    else
+      begin
+        p:=@self;
+        while left>0 do
+          begin
+            leftOver:=left-p^.Size;
+
+            if leftover<0 then
+              begin
+                if assigned(next) then
+                  begin
+                    next^.DecRef;
+                    next:=nil;
+                  end;
+
+                dec(p^.size,left);
+                left:=0;
+              end
+            else if leftover=0 then
+              begin
+                if assigned(next) then
+                  begin
+                    next^.DecRef;
+                    next:=nil;
+                  end;
+                left:=0;
+              end
+            else
+              begin
+                dec(left,p^.size);
+                p:=p^.next;
+              end;
+          end;
+      end;
   end;
 
 function TBuffer.Write(const ABuf; ACount, AOffset: SizeInt): SizeInt;

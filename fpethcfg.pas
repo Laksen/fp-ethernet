@@ -36,6 +36,11 @@ const
 const
   DHCPClientCount = 1;
 
+  DHCPInitRetryTime = 10*1000;
+
+  DHCPRequestTimeout = 2*1000;
+  DHCPRequestRetryTimeout = 1*1000;
+
 // Return a millisecond time. May overflow
 function GetMSTick: longword;
 

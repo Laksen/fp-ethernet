@@ -29,8 +29,7 @@ function RecalcChecksum(ASum: word; AOld, AModification: word): word;
   var
     Sum: LongWord;
   begin
-    Sum:=word(not ASum);
-    Sum:=ASum-AOld+AModification;
+    Sum:=ASum+word(not AOld)+AModification;
 
     Sum:=(Sum and $FFFF)+(Sum shr 16);
     Result:=(Sum and $FFFF)+(Sum shr 16);
