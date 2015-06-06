@@ -2,7 +2,11 @@ program test;
 
 uses
   sysutils,
-  fpethbuf, fpethcfg, fpethip, fpethudp, fpethtcp, fpetharp, fpethtypes, linuxraw, fpethif, fpethicmp, fpethdhcp;
+
+{$ifdef UNIX}
+  linuxraw,
+{$endif UNIX}
+  fpethbuf, fpethcfg, fpethip, fpethudp, fpethtcp, fpetharp, fpethtypes, fpethif, fpethicmp, fpethdhcp;
 
 var
   x: PBuffer;

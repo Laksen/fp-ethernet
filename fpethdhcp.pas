@@ -18,6 +18,7 @@ type
 
   TDHCPClient = record
     State: TDHCPState;
+    T0,
     T1, T2: longint;
     XID: longword;
     _IF: PNetif;
@@ -61,7 +62,6 @@ const
 
 var
   Clients: array[0..DHCPClientCount-1] of TDHCPClient;
-  XIDCounter: longword = 0;
   sock: TUDPSocketHandle = nil;
 
 {$packrecords 1}
@@ -84,7 +84,7 @@ type
     BOOTFILE: array[0..127] of char;
   end;
 
-procedure SendRequest(AClient: NativeInt);
+procedure SendRequest(AClient: NativeInt; AUnicast: boolean);
   var
     msg: PBuffer;
     writer: TBufferWriter;
@@ -103,9 +103,13 @@ procedure SendRequest(AClient: NativeInt);
         writer.WriteLongWord(clients[AClient].XID);
 
         writer.WriteWord(0);
-        writer.WriteWord(NtoBE(word($8000))); // Broadcast
+        if AUnicast then
+          writer.WriteWord(0)
+        else
+          writer.WriteWord(NtoBE(word($8000))); // Broadcast
 
-        writer.WriteZeros(2*4);
+        writer.WriteLongword(Clients[AClient]._IF^.IPv4.val);
+        writer.WriteZeros(4);
         writer.WriteLongword(Clients[AClient].Server.val);
         writer.WriteZeros(4);
 
@@ -121,12 +125,15 @@ procedure SendRequest(AClient: NativeInt);
           writer.WriteLongword(Clients[AClient].Wanted.val);
 
         writer.WriteByte(DO_SERVER_ID); writer.WriteByte(4);
-          writer.WriteLongword(Clients[AClient].Wanted.val);
+          writer.WriteLongword(Clients[AClient].Server.val);
 
         writer.WriteByte(DO_END_OPTION); // End option
           writer.WriteByte(0);
 
-        t:=UDPSendTo(sock, msg, IPAddress(IPv4_AnyAddr), DHCP_Port);
+        if AUnicast then
+          t:=UDPSendTo(sock, msg, IPAddress(Clients[AClient].Server), DHCP_Port)
+        else
+          t:=UDPSendTo(sock, msg, IPAddress(IPv4_AnyAddr), DHCP_Port);
         if t<>nrOk then
           writeln('Failed to send DHCP request: ', t);
       end;
@@ -141,6 +148,7 @@ procedure DHCPRecv(AData: Pointer; ASocket: TUDPSocketHandle; APacket: PBuffer; 
     yiaddr,siaddr: LongWord;
     claddr: THWAddress;
     i, cl: NativeInt;
+    lt: LongWord;
   begin
     PackSize:=APacket^.TotalSize;
 
@@ -217,7 +225,7 @@ procedure DHCPRecv(AData: Pointer; ASocket: TUDPSocketHandle; APacket: PBuffer; 
                   break;
 
                 APacket^.DecRef;
-                SendRequest(cl);
+                SendRequest(cl, false);
 
                 clients[cl].State:=dsRequesting;
 
@@ -242,7 +250,7 @@ procedure DHCPRecv(AData: Pointer; ASocket: TUDPSocketHandle; APacket: PBuffer; 
               end;
             DMT_NAK:
               begin
-                if clients[cl].State<>dsRequesting then
+                if not (clients[cl].State in [dsRequesting,dsRebinding,dsRenewing]) then
                   break;
 
                 if clients[cl].Server.val<>siaddr then
@@ -253,6 +261,8 @@ procedure DHCPRecv(AData: Pointer; ASocket: TUDPSocketHandle; APacket: PBuffer; 
             else
               break;
           end;
+
+          lt:=0;
 
           // Read options
           while (PackSize>0) do
@@ -273,6 +283,7 @@ procedure DHCPRecv(AData: Pointer; ASocket: TUDPSocketHandle; APacket: PBuffer; 
 
                 DO_SUBNET_MASK: Clients[cl]._IF^.SubMaskv4.val:=rd.ReadLongWord;
 
+                DO_IP_LEASE_TIME: lt:=BEtoN(rd.ReadLongWord);
                 DO_RENEW_TIME: Clients[cl].T1:=BEtoN(rd.ReadLongWord);
                 DO_REBINDING_TIME: Clients[cl].T2:=BEtoN(rd.ReadLongWord);
 
@@ -282,6 +293,11 @@ procedure DHCPRecv(AData: Pointer; ASocket: TUDPSocketHandle; APacket: PBuffer; 
 
               dec(PackSize,2+len);
             end;
+
+          if lt<=0 then
+            lt:=clients[cl].T2*2;
+
+          Clients[cl].T0:=lt;
         until true;
       end;
 
@@ -333,6 +349,8 @@ procedure DHCPTick(ADeltaMS: SmallInt);
         case Clients[i].State of
           dsInit:
             begin
+              clients[i]._IF^.IPv4:=IPv4Address(0,0,0,0);
+
               writeln('DHCP init');
 
               msg:=AllocateBuffer(sizeof(TDHCPHeader)+4+3+9+5+2+1, plApplication);
@@ -403,9 +421,47 @@ procedure DHCPTick(ADeltaMS: SmallInt);
                 clients[i].State:=dsInit
               else if clients[i].T1<=0 then
                 begin
-                  SendRequest(i);
+                  SendRequest(i,false);
                   clients[i].T1:=DHCPRequestRetryTimeout;
                 end;
+            end;
+          dsBound:
+            begin
+              dec(clients[i].T0,ADeltaMS);
+              dec(clients[i].T1,ADeltaMS);
+              dec(clients[i].T2,ADeltaMS);
+              
+              if clients[i].T1<0 then
+                begin
+                  clients[i].State:=dsRebinding;
+                  clients[i].T1:=DHCPRequestRetryTimeout;
+
+                  SendRequest(i, true);
+                end;
+            end;
+          dsRebinding:
+            begin
+              dec(clients[i].T0,ADeltaMS);
+              dec(clients[i].T1,ADeltaMS);
+              dec(clients[i].T2,ADeltaMS);
+
+              if clients[i].T2<0 then
+                begin
+                  clients[i].State:=dsRenewing;
+                  clients[i].T1:=DHCPRequestRetryTimeout;
+
+                  SendRequest(i, false);
+                end
+              else if clients[i].T1<0 then
+                begin
+                  clients[i].T1:=DHCPRequestRetryTimeout;
+
+                  SendRequest(i, true);
+                end;
+            end;
+          dsRenewing:
+            begin
+
             end;
         end;
       end;

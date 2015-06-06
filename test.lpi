@@ -42,6 +42,7 @@
       <Unit2>
         <Filename Value="fpethcfg.pas"/>
         <IsPartOfProject Value="True"/>
+        <UnitName Value="fpethcfg"/>
       </Unit2>
       <Unit3>
         <Filename Value="fpethip.pas"/>
@@ -50,6 +51,7 @@
       <Unit4>
         <Filename Value="fpethudp.pas"/>
         <IsPartOfProject Value="True"/>
+        <UnitName Value="fpethudp"/>
       </Unit4>
       <Unit5>
         <Filename Value="fpethtcp.pas"/>
@@ -58,6 +60,7 @@
       <Unit6>
         <Filename Value="fpetharp.pas"/>
         <IsPartOfProject Value="True"/>
+        <UnitName Value="fpetharp"/>
       </Unit6>
       <Unit7>
         <Filename Value="fpethtypes.pas"/>
@@ -66,6 +69,7 @@
       <Unit8>
         <Filename Value="linuxraw.pas"/>
         <IsPartOfProject Value="True"/>
+        <UnitName Value="linuxraw"/>
       </Unit8>
       <Unit9>
         <Filename Value="fpethif.pas"/>
@@ -78,6 +82,7 @@
       <Unit11>
         <Filename Value="fpethdhcp.pas"/>
         <IsPartOfProject Value="True"/>
+        <UnitName Value="fpethdhcp"/>
       </Unit11>
     </Units>
   </ProjectOptions>
