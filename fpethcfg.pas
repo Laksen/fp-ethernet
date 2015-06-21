@@ -41,17 +41,49 @@ const
   DHCPRequestTimeout = 2*1000;
   DHCPRequestRetryTimeout = 1*1000;
 
+{ TCP }
+const
+  TCPMSS = 1460;
+
+  TCPMaxReceiveWindow = 16*TCPMSS;
+
 // Return a millisecond time. May overflow
 function GetMSTick: longword;
+
+function GetRandom32(AData: pointer): longword;
 
 implementation
 
 uses
-  sysutils;
+  unix;
+
+function GetTickCount64: QWord;
+var
+  tp: TTimeVal;
+  {$IFDEF HAVECLOCKGETTIME}
+  ts: TTimeSpec;
+  {$ENDIF}
+
+begin
+ {$IFDEF HAVECLOCKGETTIME}
+   if clock_gettime(CLOCK_MONOTONIC, @ts)=0 then
+     begin
+     Result := (Int64(ts.tv_sec) * 1000) + (ts.tv_nsec div 1000000);
+     exit;
+     end;
+ {$ENDIF}
+  fpgettimeofday(@tp, nil);
+  Result := (Int64(tp.tv_sec) * 1000) + (tp.tv_usec div 1000);
+end;
 
 function GetMSTick: longword;
   begin
-    result:=GetTickCount;
+    result:=GetTickCount64;
+  end;
+
+function GetRandom32(AData: pointer): longword;
+  begin
+    result:=Random(MaxInt);
   end;
 
 end.

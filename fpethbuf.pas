@@ -19,7 +19,7 @@ type
     procedure Advance(ABytes: SizeInt);
 
     procedure Write(const Data; Size: SizeInt);
-    procedure Read(var Data; Size: SizeInt);
+    procedure Read(out Data; Size: SizeInt);
 
     procedure WriteZeros(Size: SizeInt);
     procedure WriteByte(Val: byte);
@@ -30,6 +30,8 @@ type
     function ReadWord: word;
     function ReadLongWord: longword;
   end;
+
+  { TBuffer }
 
   TBuffer = record
     Data: PByte;
@@ -43,6 +45,8 @@ type
 
     Flags: TBufferFlags;
 
+    procedure DumpBuffer;
+
     procedure Free;
 
     function AddRef: longint;
@@ -50,9 +54,10 @@ type
 
     function TotalSize: SizeInt;
 
-    procedure Concat(ABuffer: PBuffer);
+    function Concat(ABuffer: PBuffer): PBuffer;
+    function ConcatSmart(ABuffer: PBuffer): PBuffer;
 
-    function Clone: PBuffer;
+    procedure CopyTo(AOffset, ACount: SizeInt; ADest: PBuffer; ADestOffset: sizeint);
     function MakeUnique: PBuffer;
 
     function GetWriter: TBufferWriter;
@@ -63,8 +68,10 @@ type
 
     function Write(const ABuf; ACount, AOffset: SizeInt): SizeInt;
     function WriteZero(ACount, AOffset: SizeInt): SizeInt;
-    function Read(var ABuf; ACount, AOffset: SizeInt): SizeInt;
+    function Read(out ABuf; ACount, AOffset: SizeInt): SizeInt;
   private
+    function Clone: PBuffer;
+
     function ExpandHeader(AHeader: SizeInt): PBuffer;
     function ExpandTail(ATail: SizeInt): PBuffer;
 
@@ -75,6 +82,9 @@ type
 function AllocateWindow(ABuffer: PBuffer): PBuffer;
 function AllocateBuffer(ASize: SizeInt; ALayerHint: TProtocolLayer = plApplication): PBuffer;
 function AllocateStaticBuffer(AData: Pointer; ASize: SizeInt): PBuffer;
+
+var
+  DescCount: longint;
 
 implementation
 
@@ -117,6 +127,9 @@ function GetDescriptor: PBuffer;
           FreeDescriptors:=Desc^.Next;
       end;
 
+    if assigned(desc) then
+      inc(DescCount);
+
     GetDescriptor:=Desc;
   end;
 
@@ -158,6 +171,9 @@ procedure FreeDescriptor(Desc: PBuffer);
         Desc^.Next:=FreeDescriptors;
         FreeDescriptors:=Desc;
       end;
+
+    if assigned(desc) then
+      dec(DescCount);
   end;
 
 procedure FreeBuffer(Buf: PDataBuffer);
@@ -226,7 +242,7 @@ const
 function AllocateWindow(ABuffer: PBuffer): PBuffer;
   var
     p: PBuffer;
-    i, Cnt: sizeint;
+    Cnt: sizeint;
     newbuf: PBuffer;
   begin
     Cnt:=0;
@@ -382,7 +398,7 @@ procedure TBufferWriter.Write(const Data; Size: SizeInt);
     Advance(Size);
   end;
 
-procedure TBufferWriter.Read(var Data; Size: SizeInt);
+procedure TBufferWriter.Read(out Data; Size: SizeInt);
   begin
     Desc^.Read(Data, Size, Offset);
     Advance(Size);
@@ -424,51 +440,96 @@ function TBufferWriter.ReadLongWord: longword;
     Read(result, 4);
   end;
 
-procedure TBuffer.Free;
+procedure TBuffer.DumpBuffer;
   var
-    cur, N: PBuffer;
+    p: PBuffer;
+    f: TBufferFlag;
+    fst: Boolean;
   begin
-    cur:=@Self;
+    Writeln('Buffer size: ', TotalSize);
+    p:=@self;
 
-    while assigned(cur) do
+    while assigned(p) do
       begin
-        N:=cur^.Next;
+        system.write(' ',p^.Size:3, ' - (',p^.RefCnt,',',p^.Offset,') - [');
 
-        if bfOwnsMem in cur^.Flags then
-          FreeBuffer(PDataBuffer(cur^.Data));
+        fst:=true;
+        for f in p^.Flags do
+          begin
+            if not fst then system.write(',');
+            system.write(f);
+            fst:=false;
+          end;
 
-        FreeDescriptor(cur);
+        writeln(']');
 
-        cur:=N;
+        p:=p^.next;
       end;
   end;
 
-function TBuffer.AddRef: longint;
+procedure TBuffer.Free;
+  var
+    cur: PBuffer;
   begin
-    if IsConcurrent then
-      AddRef:=InterLockedIncrement(RefCnt)
-    else
+    cur:=@Self;
+
+    if bfOwnsMem in cur^.Flags then
+      FreeBuffer(PDataBuffer(cur^.Data));
+
+    FreeDescriptor(cur);
+  end;
+
+function TBuffer.AddRef: longint;
+  var
+    p: PBuffer;
+    ref,tmp: LongInt;
+  begin
+    p:=@self;
+    ref:=0;
+
+    while assigned(p) do
       begin
-        inc(RefCnt);
-        AddRef:=RefCnt;
+        if IsConcurrent then
+          tmp:=InterLockedIncrement(p^.RefCnt)
+        else
+          begin
+            inc(p^.RefCnt);
+            tmp:=p^.RefCnt;
+          end;
+
+        if tmp>ref then
+          ref:=tmp;
+
+        p:=p^.next;
       end;
+
+    AddRef:=ref;
   end;
 
 procedure TBuffer.DecRef;
   var
     OldCnt: LongInt;
-    p: PBuffer;
+    p,p2: PBuffer;
   begin
-    if IsConcurrent then
-      OldCnt:=InterLockedDecrement(RefCnt)
-    else
-      begin
-        OldCnt:=RefCnt;
-        Inc(RefCnt);
-      end;
+    p:=@self;
 
-    if OldCnt < 1 then
-      Free;
+    while assigned(p) do
+      begin
+        p2:=p^.next;
+
+        if IsConcurrent then
+          OldCnt:=InterLockedDecrement(p^.RefCnt)
+        else
+          begin
+            OldCnt:=p^.RefCnt;
+            Dec(p^.RefCnt);
+          end;
+
+        if OldCnt < 1 then
+          p^.Free;
+
+        p:=p2;
+      end;
   end;
 
 function TBuffer.TotalSize: SizeInt;
@@ -485,7 +546,7 @@ function TBuffer.TotalSize: SizeInt;
       end;
   end;
 
-procedure TBuffer.Concat(ABuffer: PBuffer);
+function TBuffer.Concat(ABuffer: PBuffer): PBuffer;
   var
     p: PBuffer;
   begin
@@ -495,33 +556,67 @@ procedure TBuffer.Concat(ABuffer: PBuffer);
       p:=p^.next;
 
     p^.next:=ABuffer;
+
+    result:=p;
   end;
 
-function TBuffer.Clone: PBuffer;
+function TBuffer.ConcatSmart(ABuffer: PBuffer): PBuffer;
   var
-    sz,
+    p: PBuffer;
+    ts,ts2: SizeInt;
+  begin
+    ts:=ABuffer^.TotalSize;
+    ts2:=TotalSize;
+    p:=self.ExpandTail(ts);
+
+    if not assigned(p) then
+      exit(nil);
+
+    ABuffer^.CopyTo(0, ts, p, ts2);
+
+    result:=p;
+  end;
+
+procedure TBuffer.CopyTo(AOffset, ACount: SizeInt; ADest: PBuffer; ADestOffset: sizeint);
+  var
     os, od,
     ms, md: SizeInt;
-    pd,ps,res: PBuffer;
+    pd,ps: PBuffer;
   begin
-    sz:=TotalSize;
-    res:=AllocateBuffer(sz, plPhy);
-
     ps:=@self;
-    pd:=res;
+    pd:=ADest;
 
-    os:=0;
-    od:=0;
+    os:=AOffset;
+    while assigned(ps) and
+          (ps^.size<=os) do
+      begin
+        dec(os,ps^.size);
+        ps:=ps^.Next;
+      end;
+
+    od:=ADestOffset;
+    while assigned(pd) and
+          (pd^.size<=od) do
+      begin
+        dec(od,pd^.size);
+        pd:=pd^.Next;
+      end;
 
     while assigned(ps) and
-          assigned(pd) do
+          assigned(pd) and
+          (ACount>0) do
       begin
         ms:=ps^.Size-os;
         md:=pd^.Size-od;
 
+        if (ms>ACount) then ms:=ACount;
+        if (md>ACount) then md:=ACount;
+
         if ms=md then
           begin
             move(ps^.Data[ps^.Offset+os], pd^.Data[pd^.Offset+od], ms);
+
+            dec(ACount, ms);
 
             ps:=ps^.Next; os:=0;
             pd:=pd^.Next; od:=0;
@@ -530,6 +625,8 @@ function TBuffer.Clone: PBuffer;
           begin
             move(ps^.Data[ps^.Offset+os], pd^.Data[pd^.Offset+od], ms);
 
+            dec(ACount, ms);
+
             ps:=ps^.next; os:=0;
             inc(od, ms);
           end
@@ -537,10 +634,23 @@ function TBuffer.Clone: PBuffer;
           begin
             move(ps^.Data[ps^.Offset+os], pd^.Data[pd^.Offset+od], md);
 
+            dec(ACount, md);
+
             inc(os, md);
             pd:=pd^.next; od:=0;
           end;
       end;
+  end;
+
+function TBuffer.Clone: PBuffer;
+  var
+    res: PBuffer;
+    ts: SizeInt;
+  begin
+    ts:=TotalSize;
+    res:=AllocateBuffer(TotalSize, plPhy);
+
+    CopyTo(0, ts, res, 0);
 
     Clone:=res;
   end;
@@ -570,7 +680,10 @@ function TBuffer.Expand(AHeader, ATail: SizeInt): PBuffer;
   var
     res: PBuffer;
   begin
-    res:=self.MakeUnique();
+    if (AHeader=0) and (ATail=0) then
+      exit(@self);
+
+    res:=MakeUnique;
 
     if assigned(res) and
        (AHeader <> 0) then
@@ -589,7 +702,8 @@ function TBuffer.ExpandHeader(AHeader: SizeInt): PBuffer;
     LeftOver: Integer;
   begin
     // Expand in current place
-    if (bfOwnsMem in Flags) and
+    if ((Flags*[bfOwnsMem])=[bfOwnsMem]) and
+       (RefCnt<2) and
        (Size<DataSize) and
        ((not (bfWritten in Flags)) or
         (Offset>0)) then
@@ -614,11 +728,11 @@ function TBuffer.ExpandHeader(AHeader: SizeInt): PBuffer;
       NewBuf:=@self
     else
       begin
-        NewBuf:=AllocateBuffer(AHeader);
+        NewBuf:=AllocateBuffer(AHeader, plPhy);
         if assigned(NewBuf) then
           begin
             NewBuf^.Offset:=NewBuf^.DataSize-NewBuf^.Size;
-            NewBuf^.Concat(@self);
+            NewBuf:=NewBuf^.Concat(@self);
           end
         else
           DecRef;
@@ -629,37 +743,54 @@ function TBuffer.ExpandHeader(AHeader: SizeInt): PBuffer;
 
 function TBuffer.ExpandTail(ATail: SizeInt): PBuffer;
   var
-    NewBuf: PBuffer;
+    NewBuf,p,p2: PBuffer;
+    leftOver: SizeInt;
   begin
-    if (bfWritten in Flags) or
-       (not (bfOwnsMem in Flags)) or
-       ((ATail+Size)>DataSize) then
+    p2:=MakeUnique;
+    p:=p2;
+
+    while assigned(p^.Next) do
+      p:=p^.next;
+
+    if bfOwnsMem in p^.Flags then
       begin
-        NewBuf:=AllocateBuffer(ATail);
+        leftOver:=p^.DataSize-(p^.Size+p^.Offset);
+
+        if leftover>ATail then leftOver:=ATail;
+
+        if (leftOver>0) then
+          begin
+            inc(p^.size,leftOver);
+            dec(ATail,leftOver);
+          end;
+      end;
+
+    if ATail>0 then
+      begin
+        NewBuf:=AllocateBuffer(ATail, plPhy);
         if assigned(NewBuf) then
           begin
-            Concat(NewBuf);
-            NewBuf:=@self;
+            NewBuf^.Offset:=0;
+            p^.next:=NewBuf;
           end
         else
           begin
-            DecRef;
-            NewBuf:=nil;
+            p2^.DecRef;
+            p2:=nil;
           end;
-      end
-    else
-      begin
-        inc(Size, ATail);
-        NewBuf:=@self;
       end;
-    ExpandTail:=NewBuf;
+
+    ExpandTail:=p2;
   end;
 
 function TBuffer.Contract(AHeader, ATail: SizeInt): PBuffer;
   var
     res: PBuffer;
   begin
-    res:=self.MakeUnique();
+    if (AHeader=0) and (ATail=0) then
+      exit(@self);
+
+    res:=MakeUnique;
 
     if AHeader <> 0 then
       res:=res^.ContractHeader(AHeader);
@@ -709,46 +840,47 @@ function TBuffer.ContractTail(ATail: SizeInt): PBuffer;
   var
     left, leftOver: SizeInt;
     p: PBuffer;
+    res: PBuffer;
   begin
-    ContractTail:=@self;
+    res:=self.MakeUnique;
 
-    left:=TotalSize;
-    if left<=ATail then
+    left:=res^.TotalSize-ATail;
+    if left<=0 then
       begin
-        if assigned(next) then
+        if assigned(res^.next) then
           begin
-            next^.DecRef;
-            next:=nil;
+            res^.next^.DecRef;
+            res^.next:=nil;
           end;
 
-        Size:=0;
-        Offset:=DataSize;
-        Exclude(Flags, bfWritten);
+        res^.Size:=0;
+        res^.Offset:=res^.DataSize;
+        Exclude(res^.Flags, bfWritten);
       end
     else
       begin
-        p:=@self;
+        p:=res;
         while left>0 do
           begin
             leftOver:=left-p^.Size;
 
             if leftover<0 then
               begin
-                if assigned(next) then
+                if assigned(p^.next) then
                   begin
-                    next^.DecRef;
-                    next:=nil;
+                    p^.next^.DecRef;
+                    p^.next:=nil;
                   end;
 
-                dec(p^.size,left);
+                dec(p^.size,-leftOver);
                 left:=0;
               end
             else if leftover=0 then
               begin
-                if assigned(next) then
+                if assigned(p^.next) then
                   begin
-                    next^.DecRef;
-                    next:=nil;
+                    p^.next^.DecRef;
+                    p^.next:=nil;
                   end;
                 left:=0;
               end
@@ -759,6 +891,8 @@ function TBuffer.ContractTail(ATail: SizeInt): PBuffer;
               end;
           end;
       end;
+
+    ContractTail:=res;
   end;
 
 function TBuffer.Write(const ABuf; ACount, AOffset: SizeInt): SizeInt;
@@ -849,7 +983,7 @@ function TBuffer.WriteZero(ACount, AOffset: SizeInt): SizeInt;
     WriteZero:=res;
   end;
 
-function TBuffer.Read(var ABuf; ACount, AOffset: SizeInt): SizeInt;
+function TBuffer.Read(out ABuf; ACount, AOffset: SizeInt): SizeInt;
   var
     p: PBuffer;
     pb: PByte;

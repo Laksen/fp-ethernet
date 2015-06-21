@@ -128,7 +128,7 @@ function IPv4Reassemble(AIF: PNetif; AID, AFragOfs: Word; ASource, ADest: TIPv4A
       begin
         if Fragments[i].NextOffset=FragOfs then
           begin
-            Fragments[i].Packet^.Concat(APacket);
+            Fragments[i].Packet:=Fragments[i].Packet^.Concat(APacket);
             Fragments[i].NextOffset:=FragOfs+Size;
 
             if Last then
@@ -166,7 +166,7 @@ function IPOutput(var AIF: TNetif; AProto: word; const AIP: TIPAddress; APacket:
       begin
         HWAddr:=BroadcastAddr;
         if IsBroadcast(AIP.V4, AIF.SubMaskv4) or
-           (ARPLookupIPv4(AIP.V4, HWAddr)=arSuccess) then
+           (ARPLookup(AIP, HWAddr)=arSuccess) then
           begin
             if (APacket^.TotalSize+20)>AIF.MTU_Eth then
               begin
@@ -281,7 +281,7 @@ procedure IPv4Input(var AIF: TNetif; Packet: PBuffer);
     if assigned(Packet) then
       case Header.Protocol of
         IPPROTO_ICMP: ICMPInput(AIF, IPAddress(Header.Source), Packet);
-        IPPROTO_TCP: TCPInput(Packet);
+        IPPROTO_TCP: TCPInput(AIF, Packet, IPAddress(Header.Source), IPAddress(Header.Dest));
         IPPROTO_UDP: UDPv4Input(AIF, Packet, Header.Source, Header.Dest);
       else
         writeln('Unknown protocol: ', hexstr(header.Protocol,2));

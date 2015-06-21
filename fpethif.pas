@@ -30,7 +30,7 @@ type
 
 procedure AddIF(AIF: PNetif);
 
-function FindRoute(const AIP: TIPAddress; var AIF: TNetif): Boolean;
+function FindRoute(const AIP: TIPAddress; out AIF: TNetif): Boolean;
 
 // Called by stack, calls driver
 function EthOutput(var AIF: TNetif; const ADst: THWAddress; ATyp: word; APacket: PBuffer): TNetResult;
@@ -52,7 +52,7 @@ procedure AddIF(AIF: PNetif);
     IFs:=AIF;
   end;
 
-function FindRoute(const AIP: TIPAddress; var AIF: TNetif): Boolean;
+function FindRoute(const AIP: TIPAddress; out AIF: TNetif): Boolean;
   var
     i: PNetif;
   begin
@@ -102,12 +102,9 @@ function EthOutput(var AIF: TNetif; const ADst: THWAddress; ATyp: word; APacket:
 
 procedure EthInput(var AIF: TNetif; APacket: PBuffer);
   var
-    PackSize: SizeInt;
     Dst,src: THWAddress;
     Typ: word;
   begin
-    PackSize:=APacket^.TotalSize;
-
     // Check dst address
     APacket^.Read(Dst, SizeOf(THWAddress), 0);
 

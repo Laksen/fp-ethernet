@@ -13,7 +13,9 @@ const
 {$packrecords 1}
 
 type
-  TNetResult = (nrOk, nrAddressLookup, nrOutOfMem, nrQueueFull, nrNoRoute, nrNotSupported, nrPortOccupied, nrNotConnected);
+  TSocketHandle = type pointer;
+
+  TNetResult = (nrOk, nrAddressLookup, nrOutOfMem, nrQueueFull, nrNoRoute, nrNotSupported, nrPortOccupied, nrNotBound, nrNotConnected);
 
   THWAddress = array[0..5] of byte;
 
@@ -22,6 +24,7 @@ type
     case integer of
       0: (val: longword);
       1: (bytes: array[0..3] of byte);
+      2: (words: array[0..1] of word);
   end;
 
   PIPv6Address = ^TIPv6Address;
@@ -48,6 +51,7 @@ function HWAddress(a,b,c,d,e,f: byte): THWAddress;
 function IPv4Address(a,b,c,d: byte): TIPv4Address;
 function IPAddress(const IP: TIPv4Address): TIPAddress;
 
+function AddrMatches(const A, B: TIPAddress): boolean;
 function AddrMatches(const A: TIPAddress; const B: TIPv4Address): boolean;
 function AddrMatches(const A: TIPAddress; const B: TIPv6Address): boolean;
 function AddrMatches(const A, B: TIPv4Address): boolean;
@@ -60,11 +64,13 @@ function IsBroadcast(const A, ASubNet: TIPv4Address): boolean;
 
 function GetStr(const AAddr: THWAddress): string;
 function GetStr(const AAddr: TIPv4Address): string;
+function GetStr(const AAddr: TIPAddress): string;
 
 function CalcCRC32(ACRC: longword; AData: PByte; ACount: SizeInt): longword;
 
+function CalcTCPPseudoChecksum(const ASrc, ADest: TIPv4Address; ASegmentLength: word): word;
 function CalcChecksum(var AData; ACount: SizeInt): word;
-function CalcChecksum(APacket: PBuffer; ACount: SizeInt): word;
+function CalcChecksum(APacket: PBuffer; ACount: SizeInt; ASum: word = 0): word;
 function CalcUDPIPv4Checksum(AChkSum: Word; const ASource, ADest: TIPv4Address; ALen: Word): word;
 
 procedure DoTick();
@@ -72,7 +78,7 @@ procedure DoTick();
 implementation
 
 uses
-  fpetharp,fpethtcp,fpethudp,fpethip,fpethdhcp,
+  fpetharp,fpethtcp,fpethip,fpethdhcp,
   fpethcfg;
 
 function HWAddress(a, b, c, d, e, f: byte): THWAddress;
@@ -97,6 +103,17 @@ function IPAddress(const IP: TIPv4Address): TIPAddress;
   begin
     result.AddrTyp:=atIPv4;
     result.V4:=IP;
+  end;
+
+function AddrMatches(const A, B: TIPAddress): boolean;
+  begin
+    if a.AddrTyp<>B.AddrTyp then
+      exit(false);
+
+    if a.AddrTyp=atIPv4 then
+      AddrMatches:=A.V4.val=B.V4.val
+    else
+      AddrMatches:=AddrMatches(A.V6, B.V6);
   end;
 
 function AddrMatches(const A: TIPAddress; const B: TIPv4Address): boolean;
@@ -153,6 +170,14 @@ function GetStr(const AAddr: THWAddress): string;
 function GetStr(const AAddr: TIPv4Address): string;
   begin
     WriteStr(GetStr, AAddr.bytes[0],'.',AAddr.bytes[1],'.',AAddr.bytes[2],'.',AAddr.bytes[3]);
+  end;
+
+function GetStr(const AAddr: TIPAddress): string;
+  begin
+    if AAddr.AddrTyp=atIPv4 then
+      GetStr:=GetStr(AAddr.V4)
+    else
+      GetStr:='ipv6';
   end;
 
 { ========================================================================
@@ -256,6 +281,21 @@ function CalcCRC32(ACRC: longword; AData: PByte; ACount: SizeInt): longword;
     result := ACRC xor $FFFFFFFF;
   end;
 
+function CalcTCPPseudoChecksum(const ASrc, ADest: TIPv4Address; ASegmentLength: word): word;
+  var
+    sum: longword;
+  begin
+    sum:=BEtoN(ASrc.words[0])+
+         BEtoN(ASrc.words[1])+
+         BEtoN(ADest.words[0])+
+         BEtoN(ADest.words[1])+
+         IPPROTO_TCP+
+         ASegmentLength;
+
+    Sum:=(Sum and $FFFF)+(Sum shr 16);
+    Result:=(Sum and $FFFF)+(Sum shr 16);
+  end;
+
 function CalcChecksum(var AData; ACount: SizeInt): word;
   var
     pw: PWord;
@@ -278,7 +318,7 @@ function CalcChecksum(var AData; ACount: SizeInt): word;
     Result:=(Sum and $FFFF)+(Sum shr 16);
   end;
 
-function CalcChecksum(APacket: PBuffer; ACount: SizeInt): word;
+function CalcChecksum(APacket: PBuffer; ACount: SizeInt; ASum: word): word;
   var
     OddByte: Boolean;
     LastByte: byte;
@@ -290,7 +330,7 @@ function CalcChecksum(APacket: PBuffer; ACount: SizeInt): word;
     OddByte:=false;
     LastByte:=0;
 
-    Sum:=0;
+    Sum:=ASum;
 
     while assigned(APacket) and
           (ACount>0) do
@@ -371,6 +411,7 @@ procedure DoTick();
 
         ARPTick(Delta);
         DHCPTick(Delta);
+        TCPTick(Delta);
       end;
   end;
 

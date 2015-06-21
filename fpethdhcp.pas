@@ -62,7 +62,7 @@ const
 
 var
   Clients: array[0..DHCPClientCount-1] of TDHCPClient;
-  sock: TUDPSocketHandle = nil;
+  sock: TSocketHandle = nil;
 
 {$packrecords 1}
 
@@ -139,7 +139,7 @@ procedure SendRequest(AClient: NativeInt; AUnicast: boolean);
       end;
   end;
 
-procedure DHCPRecv(AData: Pointer; ASocket: TUDPSocketHandle; APacket: PBuffer; ASource: TIPAddress; ASourcePort: word);
+procedure DHCPRecv(AData: Pointer; ASocket: TSocketHandle; APacket: PBuffer; ASource: TIPAddress; ASourcePort: word);
   var
     PackSize,ps2: SizeInt;
     rd,rd2: TBufferWriter;
@@ -187,7 +187,7 @@ procedure DHCPRecv(AData: Pointer; ASocket: TUDPSocketHandle; APacket: PBuffer; 
 
           rd.Advance(236-8-(8+4+8+6));
 
-          if rd.ReadLongWord<>NtoBE(DHCP_COOKIE) then break;
+          if rd.ReadLongWord<>NtoBE(longword(DHCP_COOKIE)) then break;
 
           dec(PackSize, 236+4);
 
@@ -247,6 +247,7 @@ procedure DHCPRecv(AData: Pointer; ASocket: TUDPSocketHandle; APacket: PBuffer; 
 
                 clients[cl]._IF^.IPv4.val:=yiaddr;
                 clients[cl].State:=dsBound;
+                // TODO: Signal link up
               end;
             DMT_NAK:
               begin
@@ -257,6 +258,7 @@ procedure DHCPRecv(AData: Pointer; ASocket: TUDPSocketHandle; APacket: PBuffer; 
                   break;
 
                 clients[cl].State:=dsInit;
+                clients[cl]._IF^.IPv4:=IPv4Address(0,0,0,0);
               end
             else
               break;
@@ -283,9 +285,9 @@ procedure DHCPRecv(AData: Pointer; ASocket: TUDPSocketHandle; APacket: PBuffer; 
 
                 DO_SUBNET_MASK: Clients[cl]._IF^.SubMaskv4.val:=rd.ReadLongWord;
 
-                DO_IP_LEASE_TIME: lt:=BEtoN(rd.ReadLongWord);
-                DO_RENEW_TIME: Clients[cl].T1:=BEtoN(rd.ReadLongWord);
-                DO_REBINDING_TIME: Clients[cl].T2:=BEtoN(rd.ReadLongWord);
+                DO_IP_LEASE_TIME: lt:=BEtoN(rd.ReadLongWord)*1000;
+                DO_RENEW_TIME: Clients[cl].T1:=BEtoN(rd.ReadLongWord)*1000;
+                DO_REBINDING_TIME: Clients[cl].T2:=BEtoN(rd.ReadLongWord)*1000;
 
                 else
                   rd.Advance(len);
@@ -461,7 +463,21 @@ procedure DHCPTick(ADeltaMS: SmallInt);
             end;
           dsRenewing:
             begin
+              dec(clients[i].T0,ADeltaMS);
+              dec(clients[i].T1,ADeltaMS);
 
+              if clients[i].T0<0 then
+                begin
+                  clients[i].State:=dsInit;
+                  clients[i]._IF^.IPv4:=IPv4Address(0,0,0,0);
+
+                  // TODO: Signal link down
+                end
+              else if clients[i].T1<0 then
+                begin
+                  clients[i].T1:=DHCPRequestRetryTimeout;
+                  SendRequest(i, false);
+                end;
             end;
         end;
       end;

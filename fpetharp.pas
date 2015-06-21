@@ -10,7 +10,7 @@ type
 
 procedure ARPSendGratuitous(var AIF: TNetif);
 
-function ARPLookupIPv4(const AAddress: TIPv4Address; var AHWAddress: THWAddress): TArpResult;
+function ARPLookup(const AAddress: TIPAddress; var AHWAddress: THWAddress): TArpResult;
 
 // Called once per second
 procedure ARPTick(ADelta: LongInt);
@@ -94,30 +94,33 @@ function FindCacheIndex: SizeInt;
 procedure SendRequest(AIndex: SizeInt);
   var
     Pack: PBuffer;
-    Header: TARPIPv4Header;
     _IF: TNetif;
+    wr: TBufferWriter;
   begin
     IPCache[AIndex].TTL:=ARPCacheRetryTTL;
+
+    // TODO: implement IPv6
+    if IPCache[AIndex].IP.AddrTyp<>atIPv4 then
+      exit;
 
     if FindRoute(IPCache[AIndex].IP, _IF) then
       begin
         Pack:=AllocateBuffer(sizeof(TARPIPv4Header), plLink);
         if assigned(Pack) then
           begin
-            Header.HType:=NtoBE(HTYPE_ETHER);
-            Header.HLen:=HLEN_ETHER;
-            Header.PType:=NtoBE(PTYPE_IPv4);
-            Header.PLen:=PLEN_IPv4;
+            wr:=Pack^.GetWriter;
 
-            Header.Oper:=NtoBE(OPER_REQUEST);
+            wr.WriteWord(NtoBE(word(HTYPE_ETHER)));
+            wr.WriteWord(NtoBE(word(PTYPE_IPv4)));
+            wr.WriteByte(HLEN_ETHER);
+            wr.WriteByte(PLEN_IPv4);
 
-            Header.SHA:=_IF.HWAddr;
-            Header.SPA:=_IF.IPv4;
+            wr.WriteWord(NtoBE(word(OPER_REQUEST)));
 
-            Header.THA:=BroadcastAddr;
-            Header.TPA:=IPCache[AIndex].IP.V4;
-
-            Pack^.Write(Header, sizeof(header), 0);
+            wr.Write(_IF.HWAddr, SizeOf(THWAddress));
+            wr.Write(_IF.IPv4, SizeOf(TIPv4Address));
+            wr.Write(BroadcastAddr, SizeOf(THWAddress));
+            wr.Write(IPCache[AIndex].IP.V4, SizeOf(TIPv4Address));
 
             EthOutput(_IF, BroadcastAddr, ET_ARP, Pack);
           end;
@@ -127,31 +130,30 @@ procedure SendRequest(AIndex: SizeInt);
 procedure ARPSendGratuitous(var AIF: TNetif);
   var
     Pack: PBuffer;
-    Header: TARPIPv4Header;
+    wr: TBufferWriter;
   begin
     Pack:=AllocateBuffer(sizeof(TARPIPv4Header), plLink);
     if assigned(Pack) then
       begin
-        Header.HType:=NtoBE(HTYPE_ETHER);
-        Header.HLen:=HLEN_ETHER;
-        Header.PType:=NtoBE(PTYPE_IPv4);
-        Header.PLen:=PLEN_IPv4;
+        wr:=Pack^.GetWriter;
 
-        Header.Oper:=NtoBE(OPER_REQUEST);
+        wr.WriteWord(NtoBE(word(HTYPE_ETHER)));
+        wr.WriteWord(NtoBE(word(PTYPE_IPv4)));
+        wr.WriteByte(HLEN_ETHER);
+        wr.WriteByte(PLEN_IPv4);
 
-        Header.SHA:=AIF.HWAddr;
-        Header.SPA:=AIF.IPv4;
+        wr.WriteWord(NtoBE(word(OPER_REQUEST)));
 
-        Header.THA:=BroadcastAddr;
-        Header.TPA:=AIF.IPv4;
-
-        Pack^.Write(Header, sizeof(header), 0);
+        wr.Write(AIF.HWAddr, SizeOf(THWAddress));
+        wr.Write(AIF.IPv4, SizeOf(TIPv4Address));
+        wr.Write(BroadcastAddr, SizeOf(THWAddress));
+        wr.Write(AIF.IPv4, SizeOf(TIPv4Address));
 
         EthOutput(AIF, BroadcastAddr, ET_ARP, Pack);
       end;
   end;
 
-function ARPLookupIPv4(const AAddress: TIPv4Address; var AHWAddress: THWAddress): TArpResult;
+function ARPLookup(const AAddress: TIPAddress; var AHWAddress: THWAddress): TArpResult;
   var
     i: NativeInt;
   begin
@@ -175,7 +177,7 @@ function ARPLookupIPv4(const AAddress: TIPv4Address; var AHWAddress: THWAddress)
       end;
 
     i:=FindCacheIndex;
-    IPCache[i].IP:=IPAddress(AAddress);
+    IPCache[i].IP:=AAddress;
     IPCache[i].State:=asIncomplete;
     IPCache[i].TTL:=ARPCacheRetryTTL;
 
@@ -205,62 +207,82 @@ procedure ARPTick(ADelta: LongInt);
 
 procedure ARPInput(var AIF: TNetif; APacket: PBuffer);
   var
-    Header: TARPIPv4Header;
     MergeFlag: Boolean;
     i: SizeInt;
+    rd: TBufferWriter;
+    wr: TBufferWriter;
+
+    htyp,ptyp: Word;
+    hlen,plen: Byte;
+    oper: word;
+    spa,tpa: TIPv4Address;
+    sha,tha: THWAddress;
   begin
-    APacket^.Read(Header, sizeof(Header), 0);
+    rd:=APacket^.GetWriter;
 
-    if (Header.HLen<>HLEN_ETHER) or
-       (BEtoN(Header.HType)<>HTYPE_ETHER) or
-       (Header.PLen<>PLEN_IPv4) or
-       (BEtoN(Header.PType)<>PTYPE_IPv4) then
-      begin
-        APacket^.DecRef;
-        exit;
-      end;
+    repeat
+      htyp:=BEtoN(rd.ReadWord);
+      if htyp<>HTYPE_ETHER then
+        break;
 
-    MergeFlag:=false;
-    for i := 0 to ARPIPCacheSize-1 do
-      if IPCache[i].State in [asIncomplete,asComplete] then
-        if AddrMatches(IPCache[i].IP, Header.SPA) then
-          begin
-            IPCache[i].Addr:=Header.SHA;
-            IPCache[i].State:=asComplete;
-            IPCache[i].TTL:=ARPCacheCompleteTTL;
-            MergeFlag:=true;
-          end;
+      ptyp:=BEtoN(rd.ReadWord);
+      if ptyp<>PTYPE_IPv4 then
+        break;
 
-    if AddrMatches(AIF.IPv4,Header.TPA) and
-       (not AddrMatches(AIF.HWAddr,Header.THA)) then
-      begin
-        if not MergeFlag then
-          begin
-            i:=FindCacheIndex;
+      hlen:=rd.ReadByte;
+      if hlen<>HLEN_ETHER then
+        break;
 
-            IPCache[i].IP:=IPAddress(Header.SPA);
-            IPCache[i].Addr:=Header.SHA;
-            IPCache[i].State:=asComplete;
-            IPCache[i].TTL:=ARPCacheCompleteTTL;
-          end;
+      plen:=rd.ReadByte;
+      if plen<>PLEN_IPv4 then
+        break;
 
-        if BEtoN(Header.Oper)=OPER_REQUEST then
-          begin
-            Header.Oper:=NtoBE(OPER_REPLY);
+      wr:=rd;
+      oper:=BEtoN(rd.ReadWord);
+      rd.Read(sha, sizeof(THWAddress));
+      rd.Read(spa, sizeof(TIPv4Address));
+      rd.Read(tha, sizeof(THWAddress));
+      rd.Read(tpa, sizeof(TIPv4Address));
 
-            Header.TPA:=Header.SPA;
-            Header.THA:=Header.SHA;
+      MergeFlag:=false;
+      for i := 0 to ARPIPCacheSize-1 do
+        if IPCache[i].State in [asIncomplete,asComplete] then
+          if AddrMatches(IPCache[i].IP, SPA) then
+            begin
+              IPCache[i].Addr:=SHA;
+              IPCache[i].State:=asComplete;
+              IPCache[i].TTL:=ARPCacheCompleteTTL;
+              MergeFlag:=true;
+            end;
 
-            Header.SPA:=AIF.IPv4;
-            Header.SHA:=AIF.HWAddr;
+      if AddrMatches(AIF.IPv4,TPA) and
+         (not AddrMatches(AIF.HWAddr,THA)) then
+        begin
+          if not MergeFlag then
+            begin
+              i:=FindCacheIndex;
 
-            APacket^.Write(Header, sizeof(Header), 0);
+              IPCache[i].IP:=IPAddress(SPA);
+              IPCache[i].Addr:=SHA;
+              IPCache[i].State:=asComplete;
+              IPCache[i].TTL:=ARPCacheCompleteTTL;
+            end;
 
-            EthOutput(AIF, Header.THA, ET_ARP, APacket);
+          if Oper=OPER_REQUEST then
+            begin
+              wr.WriteWord(NtoBE(OPER_REPLY));
 
-            exit;
-          end;
-      end;
+              wr.Write(AIF.HWAddr, sizeof(THWAddress));
+              wr.Write(AIF.IPv4, sizeof(TIPv4Address));
+              wr.Write(SHA, sizeof(THWAddress));
+              wr.Write(SPA, sizeof(TIPv4Address));
+
+              EthOutput(AIF, SHA, ET_ARP, APacket);
+
+              exit;
+            end;
+        end;
+    until true;
 
     APacket^.DecRef;
   end;

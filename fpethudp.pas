@@ -6,23 +6,21 @@ uses
   fpethif, fpethbuf, fpethtypes;
 
 type
-  TUDPSocketHandle = type pointer;
+  TUDPErrorCallback = procedure(AData: Pointer; ASocket: TSocketHandle);
+  TUDPRecvCallback = procedure(AData: Pointer; ASocket: TSocketHandle; APacket: PBuffer; ASource: TIPAddress; ASourcePort: word);
 
-  TUDPErrorCallback = procedure(AData: Pointer; ASocket: TUDPSocketHandle);
-  TUDPRecvCallback = procedure(AData: Pointer; ASocket: TUDPSocketHandle; APacket: PBuffer; ASource: TIPAddress; ASourcePort: word);
+function UDPCreateSocket: TSocketHandle;
+procedure UDPDestroySocket(ASock: TSocketHandle);
 
-function UDPCreateSocket: TUDPSocketHandle;
-procedure UDPDestroySocket(ASock: TUDPSocketHandle);
+procedure UDPSetData(ASock: TSocketHandle; AData: pointer);
+procedure UDPErrorCallback(ASock: TSocketHandle; AFunc: TUDPErrorCallback);
+procedure UDPRecvCallback(ASock: TSocketHandle; AFunc: TUDPRecvCallback);
 
-procedure UDPSetData(ASock: TUDPSocketHandle; AData: pointer);
-procedure UDPErrorCallback(ASock: TUDPSocketHandle; AFunc: TUDPErrorCallback);
-procedure UDPRecvCallback(ASock: TUDPSocketHandle; AFunc: TUDPRecvCallback);
+function UDPBind(ASock: TSocketHandle; const AAddr: TIPAddress; APort: word): TNetResult;
+function UDPConnect(ASock: TSocketHandle; const AAddr: TIPAddress; APort: word): TNetResult;
 
-function UDPBind(ASock: TUDPSocketHandle; const AAddr: TIPAddress; APort: word): TNetResult;
-function UDPConnect(ASock: TUDPSocketHandle; const AAddr: TIPAddress; APort: word): TNetResult;
-
-function UDPSend(ASock: TUDPSocketHandle; APacket: PBuffer): TNetResult;
-function UDPSendTo(ASock: TUDPSocketHandle; APacket: PBuffer; const ADest: TIPAddress; ADestPort: word): TNetResult;
+function UDPSend(ASock: TSocketHandle; APacket: PBuffer): TNetResult;
+function UDPSendTo(ASock: TSocketHandle; APacket: PBuffer; const ADest: TIPAddress; ADestPort: word): TNetResult;
 
 // Stack functions
 function UDPOutput(var AIF: TNetif; APacket: PBuffer; ASourcePort, ADestPort: word; const ADest: TIPAddress): TNetResult;
@@ -31,7 +29,7 @@ procedure UDPv4Input(var AIF: TNetif; APacket: PBuffer; const ASource, ADest: TI
 implementation
 
 uses
-  fpethip;
+  fpethip, fpetharp;
 
 type
   TUDPSocketState = (usUnbound, usBound, usConnected);
@@ -96,7 +94,7 @@ function GetFreePort: word;
     exit(0);
   end;
 
-function UDPCreateSocket: TUDPSocketHandle;
+function UDPCreateSocket: TSocketHandle;
   var
     tmp: PUDPSocket;
   begin
@@ -108,7 +106,7 @@ function UDPCreateSocket: TUDPSocketHandle;
     UDPCreateSocket:=tmp;
   end;
 
-procedure UDPDestroySocket(ASock: TUDPSocketHandle);
+procedure UDPDestroySocket(ASock: TSocketHandle);
   var
     p: PUDPSocket;
   begin
@@ -130,22 +128,22 @@ procedure UDPDestroySocket(ASock: TUDPSocketHandle);
     Freemem(ASock);
   end;
 
-procedure UDPSetData(ASock: TUDPSocketHandle; AData: pointer);
+procedure UDPSetData(ASock: TSocketHandle; AData: pointer);
   begin
     PUDPSocket(ASock)^.Data:=AData;
   end;
 
-procedure UDPErrorCallback(ASock: TUDPSocketHandle; AFunc: TUDPErrorCallback);
+procedure UDPErrorCallback(ASock: TSocketHandle; AFunc: TUDPErrorCallback);
   begin
     PUDPSocket(ASock)^.ErrorClb:=AFunc;
   end;
 
-procedure UDPRecvCallback(ASock: TUDPSocketHandle; AFunc: TUDPRecvCallback);
+procedure UDPRecvCallback(ASock: TSocketHandle; AFunc: TUDPRecvCallback);
   begin
     PUDPSocket(ASock)^.RecvClb:=AFunc;
   end;
 
-function UDPBind(ASock: TUDPSocketHandle; const AAddr: TIPAddress; APort: word): TNetResult;
+function UDPBind(ASock: TSocketHandle; const AAddr: TIPAddress; APort: word): TNetResult;
   var
     sck: PUDPSocket;
   begin
@@ -162,7 +160,9 @@ function UDPBind(ASock: TUDPSocketHandle; const AAddr: TIPAddress; APort: word):
     exit(nrOk);
   end;
 
-function UDPConnect(ASock: TUDPSocketHandle; const AAddr: TIPAddress; APort: word): TNetResult;
+function UDPConnect(ASock: TSocketHandle; const AAddr: TIPAddress; APort: word): TNetResult;
+  var
+    hw: THWAddress;
   begin
     if PUDPSocket(ASock)^.State<>usConnected then
       begin
@@ -175,10 +175,12 @@ function UDPConnect(ASock: TUDPSocketHandle; const AAddr: TIPAddress; APort: wor
     PUDPSocket(ASock)^.RemoteIP:=AAddr;
     PUDPSocket(ASock)^.RemotePort:=APort;
 
+    ARPLookup(AAddr, hw);
+
     exit(nrOk);
   end;
 
-function UDPSend(ASock: TUDPSocketHandle; APacket: PBuffer): TNetResult;
+function UDPSend(ASock: TSocketHandle; APacket: PBuffer): TNetResult;
   begin
     if PUDPSocket(ASock)^.State<>usConnected then
       exit(nrNotConnected);
@@ -186,7 +188,7 @@ function UDPSend(ASock: TUDPSocketHandle; APacket: PBuffer): TNetResult;
     exit(UDPSendTo(ASock, APacket, PUDPSocket(ASock)^.RemoteIP, PUDPSocket(ASock)^.RemotePort));
   end;
 
-function UDPSendTo(ASock: TUDPSocketHandle; APacket: PBuffer; const ADest: TIPAddress; ADestPort: word): TNetResult;
+function UDPSendTo(ASock: TSocketHandle; APacket: PBuffer; const ADest: TIPAddress; ADestPort: word): TNetResult;
   var
     AIF: TNetif;
   begin
@@ -198,8 +200,9 @@ function UDPSendTo(ASock: TUDPSocketHandle; APacket: PBuffer; const ADest: TIPAd
 
 function UDPOutput(var AIF: TNetif; APacket: PBuffer; ASourcePort, ADestPort: word; const ADest: TIPAddress): TNetResult;
   var
-    Header: TUDPHeader;
     PackSize: SizeInt;
+    wr: TBufferWriter;
+    Checksum: Word;
   begin
     if ADest.AddrTyp=atIPv4 then
       begin
@@ -207,13 +210,15 @@ function UDPOutput(var AIF: TNetif; APacket: PBuffer; ASourcePort, ADestPort: wo
         APacket:=APacket^.Expand(SizeOf(TUDPHeader), 0);
         if assigned(APacket) then
           begin
-            Header.Dest:=NtoBE(ADestPort);
-            Header.Source:=NtoBE(ASourcePort);
-            Header.Length:=NtoBE(word(sizeof(Header)+PackSize));
-            APacket^.Write(Header, SizeOf(Header), 0);
+            wr:=APacket^.GetWriter;
 
-            Header.Checksum:=NtoBE(not CalcUDPIPv4Checksum(CalcChecksum(APacket, Sizeof(Header)+PackSize), AIF.IPv4, ADest.V4, sizeof(Header)+PackSize));
-            APacket^.Write(Header.Checksum, SizeOf(word), 6);
+            wr.WriteWord(NtoBE(ASourcePort));
+            wr.WriteWord(NtoBE(ADestPort));
+            wr.WriteWord(NtoBE(word(sizeof(TUDPHeader)+PackSize)));
+            wr.WriteWord(0);
+
+            Checksum:=NtoBE(word(not CalcUDPIPv4Checksum(CalcChecksum(APacket, Sizeof(TUDPHeader)+PackSize), AIF.IPv4, ADest.V4, sizeof(TUDPHeader)+PackSize)));
+            APacket^.Write(Checksum, SizeOf(word), 6);
 
             exit(IPOutput(AIF, IPPROTO_UDP, ADest, APacket));
           end

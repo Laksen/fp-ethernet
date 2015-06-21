@@ -5,8 +5,7 @@ unit linuxraw;
 interface
 
 uses
-  BaseUnix,
-  Unix, unixtype, Sockets,
+  unixtype, Sockets,
   fpethbuf, fpethtypes;
 
 procedure Start;
@@ -52,23 +51,15 @@ procedure Start;
     timeout: timespec;
   begin
     sockfd:=fpsocket(PF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
-    writeln(sockfd);
-    writeln(socketerror);
 
     timeout.tv_nsec:=100*1000*1000;
     timeout.tv_sec:=0;
     fpsetsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, @timeout, sizeof(timeout));
-
-    fillchar(ifr, sizeof(ifr), 0);
-    ifr.ifrn_name:='eth0';
-
-    writeln(FpIOCtl(sockfd, SIOCGIFINDEX, @ifr));
-    writeln(ifr.ifru_ivalue);
   end;
 
 procedure Stop;
   begin
-    FpClose(sockfd);
+    CloseSocket(sockfd);
   end;
 
 function Recv: PBuffer;
@@ -91,7 +82,7 @@ function Recv: PBuffer;
             exit(buf);
           end
         else
-          writeln('Dropped input frame');
+          WriteLn('Dropped input frame');
       end;
 
     exit(nil);
