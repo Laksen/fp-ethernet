@@ -8,7 +8,7 @@ const
 
 { Buffers }
 const
-  BufferSize = 256*4;
+  BufferSize = 256*8;
   BufferCount = 32*4;
 
   DescriptorCount = 48;
@@ -45,7 +45,10 @@ const
 const
   TCPMSS = 1460;
 
-  TCPMaxReceiveWindow = 16*TCPMSS;
+  TCPMaxReceiveWindow = 128*TCPMSS;
+
+  TCPWindowBuffers = 64;
+  TCPWindowTimeout = 5000;
 
 // Return a millisecond time. May overflow
 function GetMSTick: longword;

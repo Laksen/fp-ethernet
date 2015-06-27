@@ -57,6 +57,20 @@ type
 
   TTCPSocketState = (tssUnbound, tssBound, tssConnected);
 
+  TTCPRecvChunk = record
+    Buffer: PBuffer;
+    Seq: longword;
+    Time: SizeInt;
+  end;
+
+  TTCPWindow = record
+    Chunks: array[0..TCPWindowBuffers-1] of TTCPRecvChunk;
+
+    procedure TimeoutSegments(ADeltaMS: sizeint);
+    function GetBuffer(AExpectedSeg: longword): PBuffer;
+    procedure AddSegment(ASeq: longword; ABuffer: PBuffer);
+  end;
+
   PTCPSocket = ^TTCPSocket;
   TTCPSocket = record
     Next: PTCPSocket;
@@ -81,10 +95,19 @@ type
     SndUna,SndNxt,SndWnd: longword;
     RcvNxt,RcvWnd: longword;
 
+    SendWindowScale,
+    WindowScale: byte;
+
+    AckTimeout: SmallInt;
+
+    // Receive buffer
+    RecvWindow: TTCPWindow;
+
     function InRecvWnd(ASeq: longword): boolean;
   end;
 
 const
+  TCP_OPT_NOP = 1;
   TCP_OPT_MSS = 2;
   TCP_OPT_WINDOW_SCALING = 3;
 
@@ -208,6 +231,8 @@ function TCPCreateSocket: TSocketHandle;
     tmp:=PTCPSocket(AllocMem(sizeof(TTCPSocket)));
 
     tmp^.Next:=Socks;
+    tmp^.WindowScale:=2;
+
     Socks:=tmp;
 
     TCPCreateSocket:=tmp;
@@ -329,41 +354,69 @@ function TCPWrite(ASock: TSocketHandle; const AData; ASize: SizeInt): SizeInt;
 function TCPDataInput(var sock: PTCPSocket; Seq: longword; APacket: PBuffer; IsFin: boolean): TNetResult;
   var
     Diff: SizeInt;
+    Segments: SizeInt;
   begin
     if assigned(APacket) then
       begin
-        if (seq = sock^.RcvNxt) and
-           (sock^.RcvWnd > 0) then
+        if sock^.RcvWnd>0 then
           begin
-            Diff:=sock^.RcvWnd-APacket^.TotalSize;
-            if Diff<0 then
-              APacket:=APacket^.Contract(0, -Diff);
+            sock^.RecvWindow.AddSegment(seq, APacket);
 
-            if assigned(APacket) then
+            Segments:=0;
+            APacket:=sock^.RecvWindow.GetBuffer(sock^.RcvNxt);
+            while assigned(APacket) do
               begin
-                sock^.RcvNxt:=Seq+APacket^.TotalSize;
+                {Diff:=sock^.RcvWnd-APacket^.TotalSize;
+                if Diff<0 then
+                  APacket:=APacket^.Contract(0, -Diff);}
 
-                if assigned(sock^.RecvBuff) then
+                if assigned(APacket) then
                   begin
-                    sock^.RecvBuff^.ConcatSmart(APacket);
-                    APacket^.DecRef;
-                  end
-                else
-                  sock^.RecvBuff:=APacket;
+                    inc(Segments);
 
-                if assigned(sock^.RecvClb) then
-                  sock^.RecvClb(sock, sock^.Data);
+                    sock^.RcvNxt:=sock^.RcvNxt+APacket^.TotalSize;
 
-                if assigned(sock^.RecvBuff) then
-                  sock^.RcvWnd:=TCPMaxReceiveWindow-sock^.RecvBuff^.TotalSize
-                else
-                  sock^.RcvWnd:=TCPMaxReceiveWindow;
+                    if assigned(sock^.RecvBuff) then
+                      begin
+                        sock^.RecvBuff^.ConcatSmart(APacket);
+                        APacket^.DecRef;
+                      end
+                    else
+                      sock^.RecvBuff:=APacket;
+
+                    if assigned(sock^.RecvClb) then
+                      sock^.RecvClb(sock, sock^.Data);
+
+                    if assigned(sock^.RecvBuff) then
+                      sock^.RcvWnd:=TCPMaxReceiveWindow-sock^.RecvBuff^.TotalSize
+                    else
+                      sock^.RcvWnd:=TCPMaxReceiveWindow;
+                  end;
+
+                APacket:=sock^.RecvWindow.GetBuffer(sock^.RcvNxt);
               end;
 
             if IsFin then
-              inc(sock^.RcvNxt);
-
-            exit(TCPSendMsg(sock, sock^.SndNxt, sock^.RcvNxt, sock^.RcvWnd, [tfAck], nil, nil));
+              begin
+                inc(sock^.RcvNxt);
+                sock^.AckTimeout:=-1;
+                exit(TCPSendMsg(sock, sock^.SndNxt, sock^.RcvNxt, sock^.RcvWnd shr sock^.WindowScale, [tfAck], nil, nil));
+              end
+            else if segments>0 then
+              begin
+                if sock^.AckTimeout=-1 then
+                  begin
+                    sock^.AckTimeout:=500;
+                    exit(nrOk);
+                  end
+                else
+                  begin
+                    sock^.AckTimeout:=-1;
+                    exit(TCPSendMsg(sock, sock^.SndNxt, sock^.RcvNxt, sock^.RcvWnd shr sock^.WindowScale, [tfAck], nil, nil));
+                  end;
+              end
+            else
+              exit(nrOk);
           end
         else
           begin
@@ -374,7 +427,7 @@ function TCPDataInput(var sock: PTCPSocket; Seq: longword; APacket: PBuffer; IsF
     else if IsFin then
       sock^.RcvNxt:=Seq+1;
 
-    exit(TCPSendMsg(sock, sock^.SndNxt, sock^.RcvNxt, sock^.RcvWnd, [tfAck], nil, nil));
+    exit(TCPSendMsg(sock, sock^.SndNxt, sock^.RcvNxt, sock^.RcvWnd shr sock^.WindowScale, [tfAck], nil, nil));
   end;
 
 function TCPGetConnectOptions(ASock: PTCPSocket): PBuffer;
@@ -382,7 +435,7 @@ function TCPGetConnectOptions(ASock: PTCPSocket): PBuffer;
     res: PBuffer;
     wr: TBufferWriter;
   begin
-    res:=AllocateBuffer(4, plPhy);
+    res:=AllocateBuffer(8, plPhy);
 
     if assigned(res) then
       begin
@@ -391,6 +444,12 @@ function TCPGetConnectOptions(ASock: PTCPSocket): PBuffer;
         wr.WriteByte(TCP_OPT_MSS);
         wr.writebyte(4);
         wr.WriteWord(NtoBE(word(TCPMSS)));
+
+        wr.WriteByte(TCP_OPT_NOP);
+
+        wr.WriteByte(TCP_OPT_WINDOW_SCALING);
+        wr.writebyte(3);
+        wr.WriteByte(ASock^.WindowScale);
       end;
 
     result:=res;
@@ -450,7 +509,10 @@ procedure TCPInput(var AIF: TNetif; APacket: PBuffer; const ASource, ADest: TIPA
                   sock^.SPort:=DPort;
 
                   sock^.RcvNxt:=Seq+1;
-                  sock^.SndWnd:=Wnd;
+
+                  sock^.SendWindowScale:=2;
+
+                  sock^.SndWnd:=Wnd shl sock^.SendWindowScale;
 
                   if TCPSendMsg(sock, sock^.SndNxt, sock^.RcvNxt, sock^.RcvWnd, [tfSyn, tfAck], opts, nil)=nrOk then
                     sock^.State:=tsSynReceived;
@@ -513,8 +575,93 @@ procedure TCPInput(var AIF: TNetif; APacket: PBuffer; const ASource, ADest: TIPA
   end;
 
 procedure TCPTick(ADeltaMS: NativeInt);
+  var
+    p: PTCPSocket;
   begin
+    p:=Socks;
+    while assigned(p) do
+      begin
+        p^.RecvWindow.TimeoutSegments(ADeltaMS);
 
+        if p^.AckTimeout<>-1 then
+          begin
+            dec(p^.AckTimeout,ADeltaMS);
+            if p^.AckTimeout<=0 then
+              begin
+                if TCPSendMsg(p, p^.SndNxt, p^.RcvNxt, p^.RcvWnd, [tfAck], nil, nil)=nrOk then
+                  p^.AckTimeout:=-1
+                else
+                  p^.AckTimeout:=0;
+              end;
+          end;
+
+        p:=p^.Next;
+      end;
+  end;
+
+procedure TTCPWindow.TimeoutSegments(ADeltaMS: sizeint);
+  var
+    i: SizeInt;
+  begin
+    for i := 0 to TCPWindowBuffers-1 do
+      begin
+        if Chunks[i].Buffer<>nil then
+          begin
+            dec(chunks[i].Time,ADeltaMS);
+            if chunks[i].Time<=0 then
+              begin
+                chunks[i].Buffer^.DecRef;
+                chunks[i].Buffer:=nil;
+              end;
+          end;
+      end;
+  end;
+
+function TTCPWindow.GetBuffer(AExpectedSeg: longword): PBuffer;
+  var
+    i: SizeInt;
+  begin
+    for i := 0 to TCPWindowBuffers-1 do
+      if (Chunks[i].Seq=AExpectedSeg) and
+         (chunks[i].Buffer<>nil) then
+        begin
+          GetBuffer:=chunks[i].Buffer;
+          chunks[i].Buffer:=nil;
+          exit;
+        end;
+
+    exit(nil);
+  end;
+
+procedure TTCPWindow.AddSegment(ASeq: longword; ABuffer: PBuffer);
+  var
+    i,lowest: SizeInt;
+  begin
+    lowest:=0;
+    for i := 0 to TCPWindowBuffers-1 do
+      begin
+        if Chunks[i].Buffer=nil then
+          begin
+            Chunks[i].Buffer:=ABuffer;
+            Chunks[i].Seq:=ASeq;
+            Chunks[i].Time:=TCPWindowTimeout;
+
+            exit;
+          end
+        else if chunks[lowest].Seq<chunks[i].Seq then;
+          Lowest:=i;
+      end;
+
+    if chunks[lowest].Seq>ASeq then
+      begin
+        chunks[i].Buffer^.DecRef;
+
+        chunks[i].Buffer:=ABuffer;
+        chunks[i].Seq:=ASeq;
+        Chunks[i].Time:=TCPWindowTimeout;
+      end
+    else
+      ABuffer^.DecRef;
   end;
 
 function TTCPSocket.InRecvWnd(ASeq: longword): boolean;
