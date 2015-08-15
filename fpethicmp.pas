@@ -32,7 +32,7 @@ function RecalcChecksum(ASum: word; AOld, AModification: word): word;
     Sum:=ASum+word(not AOld)+AModification;
 
     Sum:=(Sum and $FFFF)+(Sum shr 16);
-    Result:=(Sum and $FFFF)+(Sum shr 16);
+    RecalcChecksum:=(Sum and $FFFF)+(Sum shr 16);
   end;
 
 procedure ICMPInput(var AIF: TNetif; ASource: TIPAddress; APacket: PBuffer);
@@ -47,8 +47,6 @@ procedure ICMPInput(var AIF: TNetif; ASource: TIPAddress; APacket: PBuffer);
         Header.Checksum:=NtoBE(word(not RecalcChecksum(BEtoN(not Header.Checksum), TYPE_ECHO_REQUEST shl 8, TYPE_ECHO_REPLY shl 8)));
 
         APacket^.Write(header, sizeof(header), 0);
-
-        writeln('Got ping');
 
         IPOutput(AIF, IPPROTO_ICMP, ASource, APacket);
       end

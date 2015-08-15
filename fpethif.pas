@@ -2,6 +2,8 @@ unit fpethif;
 
 interface
 
+{$mode objfpc}
+
 uses
   fpethbuf, fpethtypes;
 

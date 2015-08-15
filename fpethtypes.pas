@@ -2,6 +2,8 @@ unit fpethtypes;
 
 interface
 
+{$mode objfpc}
+
 uses
   fpethbuf;
 
@@ -406,12 +408,15 @@ procedure DoTick();
     else
       begin
         NewTick:=GetMSTick;
-        Delta:=NewTick-OldTick;
-        OldTick:=NewTick;
+        if newtick<>OldTick then
+          begin
+            Delta:=NewTick-OldTick;
+            OldTick:=NewTick;
 
-        ARPTick(Delta);
-        DHCPTick(Delta);
-        TCPTick(Delta);
+            ARPTick(Delta);
+            DHCPTick(Delta);
+            TCPTick(Delta);
+          end;
       end;
   end;
 

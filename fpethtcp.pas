@@ -2,6 +2,7 @@ unit fpethtcp;
 
 interface
 
+{$mode objfpc}
 {$modeswitch AdvancedRecords}
 
 uses
