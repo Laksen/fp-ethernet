@@ -2,6 +2,7 @@ unit fpethbuf;
 
 interface
 
+{$mode objfpc}
 {$modeswitch AdvancedRecords}
 
 type
@@ -525,7 +526,7 @@ procedure TBuffer.DecRef;
             Dec(p^.RefCnt);
           end;
 
-        if OldCnt < 1 then
+        if OldCnt <= 1 then
           p^.Free;
 
         p:=p2;
